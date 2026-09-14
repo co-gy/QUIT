@@ -1,0 +1,119 @@
+# Quit
+
+This repository contains the implementation of [Quit While You're Ahead: Quit for Efficient Candidate Generation in Machine Translation Reranking](https://arxiv.org/abs/2609.00588).
+
+Quit (Quantifying Uncertainty for Incremental Termination) accelerates machine translation by generating and reranking candidates in batches, stopping when the best reranking score stabilizes. It reduces both generation and reranking costs for Minimum Bayes Risk (MBR) decoding and Quality Estimation (QE) reranking, while maintaining translation quality on nearly all external metrics in our experiments.
+
+## Installation
+
+Environment: Python 3.10 and CUDA 12.8.
+
+This project uses a modified version of COMET that supports saving utility matrices:
+
+```bash
+uv venv venv --python=3.10
+source venv/bin/activate
+uv pip install git+https://github.com/co-gy/COMET.git
+uv pip install "setuptools<81"
+uv pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+```
+
+## Data Format
+
+### MT Data
+Store translation data in `mt_data/<dataset>-genmt-<full-model-name>-<candidate-num>.jsonl`, for example `mt_data/wmt25-genmt-Hy-MT2-30B-A3B-512.jsonl`. Each line is a JSON object for one source sentence:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `src_lang` | string | Source language name. |
+| `tgt_lang` | string | Target language name. |
+| `src_text` | string | Source sentence. |
+| `ref` | string | Reference translation. |
+| `result` | list of strings | Translation candidates in generation order. |
+| `hypo_num_tokens` | list of integers | Generated token count for each candidate, aligned with `result`. |
+
+### COMET Data
+
+Store COMET input files in `txt-<dataset>-<short-model-name>/`:
+
+| File | Contents |
+| --- | --- |
+| `src.txt` | One source sentence per line. |
+| `ref.txt` | One reference translation per line, aligned with `src.txt`. |
+| `mt-<candidate-num>.txt` | One candidate per line, with each source's candidates grouped consecutively in JSONL order. |
+
+`<candidate-num>` is the number of candidates per source sentence.
+
+### Precomputed Scores
+
+Save full scores as NumPy arrays, preserving the sentence and candidate order in the JSONL file. For `S` source sentences and `N` candidates per sentence:
+
+| Scores | Path | Shape |
+| --- | --- | --- |
+| MBR utility matrices | `utility_matrix/<dataset>-<short-model-name>-um.npy` | `(S, N, N)` |
+| QE score vectors | `qe_vec/<dataset>-<short-model-name>-qe_vec.npy` | `(S, N)` |
+
+Model aliases: `Hy-MT2-30B-A3B` → `hy`, `Qwen3-8B` → `qwen`, and `translategemma-12b-it` / `vllm-translategemma-12b-it` → `gemma`.
+
+
+## Usage
+
+### 1. Prepare COMET Inputs
+
+Convert MT data to the COMET format described above:
+
+```bash
+mkdir -p txt-wmt25-hy utility_matrix qe_vec
+python prepare_comet_data.py mt_data/wmt25-genmt-Hy-MT2-30B-A3B-512.jsonl \
+  --num-samples 512 \
+  --source-output txt-wmt25-hy/src.txt \
+  --reference-output txt-wmt25-hy/ref.txt \
+  --mt-output txt-wmt25-hy/mt-512.txt
+```
+
+### 2. Compute Baseline Scores
+
+**Standard MBR:** Use `Unbabel/wmt22-comet-da` as the utility model, select the candidate with the highest mean utility for each source sentence, and save all utility matrices:
+
+```bash
+comet-mbr \
+    -s "txt-wmt25-hy/src.txt" \
+    -t "txt-wmt25-hy/mt-512.txt" \
+    -o "txt-wmt25-hy/standard-mbr-512.txt" \
+    --num_sample 512 \
+    --um_path "utility_matrix/wmt25-hy-um.npy"
+```
+
+**Standard QE:** Score candidates with `Unbabel/wmt22-cometkiwi-da`, select the highest-scoring candidate for each source sentence, and save all QE score vectors:
+
+```bash
+python qe.py \
+  -s txt-wmt25-hy/src.txt \
+  -t txt-wmt25-hy/mt-512.txt \
+  -o txt-wmt25-hy/standard-qe-512.txt \
+  --num_samples 512 \
+  --qe_vec_path qe_vec/wmt25-hy-qe_vec.npy
+```
+
+### 3. Run Quit
+
+Run either variant using its precomputed scores. `--k` sets the candidate batch size, `--w` the window size, and `--alpha` the stopping threshold.
+
+```bash
+python quit_mbr.py \
+  --dataset wmt25 --model Hy-MT2-30B-A3B --hypo_nums 512 \
+  --k 8 --w 8 --alpha 0.001
+python quit_qe.py \
+  --dataset wmt25 --model Hy-MT2-30B-A3B --hypo_nums 512 \
+  --k 8 --w 8 --alpha 0.001
+```
+
+Selected translations are saved in the same directory as the COMET inputs, with one translation per source sentence. Compute and output-token ratios relative to the baseline are printed and saved to `<dataset>-<short-model-name>-{mbr,qe}-analyze.json`.
+
+## Additional
+
+See [generation](generation/) for candidate generation and [evaluation](evaluation/) for translation evaluation.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
