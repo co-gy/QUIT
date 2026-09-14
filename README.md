@@ -73,7 +73,7 @@ python prepare_comet_data.py mt_data/wmt25-genmt-Hy-MT2-30B-A3B-512.jsonl \
   --mt-output txt-wmt25-hy/mt-512.txt
 ```
 
-### 2. Compute Baseline Scores
+### 2. Run Standard MBR and QE
 
 **Standard MBR:** Use `Unbabel/wmt22-comet-da` as the utility model, select the candidate with the highest mean utility for each source sentence, and save all utility matrices:
 
